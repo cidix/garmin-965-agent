@@ -22,6 +22,12 @@ USER_AGENT = (
 
 TOP_N = 5  # Top 5 in message 1, next 5 in message 2 if available
 
+# Set to True if you want a "Sale ended" message when discounts disappear
+NOTIFY_SALE_END = False
+
+# How many total attempts for transient errors
+MAX_ATTEMPTS = 3
+RETRY_SLEEP_SECONDS = 3
 
 # ----------------------------
 # State
@@ -33,8 +39,19 @@ def load_state() -> Dict[str, Any]:
     """
     if not os.path.exists(STATE_FILE):
         return {"sale_active": False, "last_signature": ""}
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        # Normalize expected keys
+        if "sale_active" not in state:
+            state["sale_active"] = False
+        if "last_signature" not in state:
+            state["last_signature"] = ""
+        return state
+    except Exception:
+        # Corrupt or partial file: reset
+        return {"sale_active": False, "last_signature": ""}
 
 
 def save_state(state: Dict[str, Any]) -> None:
@@ -61,11 +78,21 @@ def telegram_send(message: str) -> None:
 # ----------------------------
 def http_get_json(url: str) -> Optional[Dict[str, Any]]:
     headers = {"User-Agent": USER_AGENT}
-    r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+
+    try:
+        r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    except requests.RequestException:
+        return None
 
     # Wenn blockiert / temporär down: still skippen (keine Fehlalarme)
     if r.status_code != 200:
         return None
+
+    # Shopify JSON sollte JSON sein; falls HTML kommt (WAF/Block), skip
+    ct = (r.headers.get("content-type") or "").lower()
+    if "application/json" not in ct and "json" not in ct:
+        return None
+
     try:
         return r.json()
     except Exception:
@@ -106,6 +133,8 @@ def collect_deals(products: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]],
     discounted_products_count = 0
     discounted_variants_count = 0
 
+    seen_variant_ids = set()
+
     for p in products:
         title = p.get("title") or "MNSTRY Product"
         handle = p.get("handle") or ""
@@ -113,13 +142,19 @@ def collect_deals(products: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]],
 
         product_has_discount = False
 
-        for v in p.get("variants", []):
+        for v in p.get("variants", []) or []:
             price = to_float(v.get("price"))
             cap = to_float(v.get("compare_at_price"))
             variant_id = v.get("id")
 
             if price is None or cap is None:
                 continue
+
+            # Dedupe
+            vid_int = int(variant_id) if variant_id is not None else 0
+            if vid_int in seen_variant_ids:
+                continue
+            seen_variant_ids.add(vid_int)
 
             if cap > price:
                 product_has_discount = True
@@ -130,7 +165,7 @@ def collect_deals(products: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]],
                 deals.append({
                     "title": title,
                     "url": url,
-                    "variant_id": int(variant_id) if variant_id is not None else 0,
+                    "variant_id": vid_int,
                     "price": price,
                     "compare_at": cap,
                     "discount_abs": disc_abs,
@@ -149,6 +184,7 @@ def rank_deals(deals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
       1) Rabatt % desc
       2) Rabatt CHF desc
       3) Preis asc (günstiger bevorzugt)
+      4) variant_id (stable)
     """
     return sorted(
         deals,
@@ -168,71 +204,85 @@ def format_deal_line(d: Dict[str, Any]) -> str:
 # ----------------------------
 # Main
 # ----------------------------
-def main() -> None:
+def run_once() -> None:
     state = load_state()
 
     data = http_get_json(MNSTRY_PRODUCTS_JSON)
     if not data:
-        # still fail: keine Meldung, Status nicht kaputt machen
+        # keine Meldung, Status nicht kaputt machen
         return
 
-    products = data.get("products", [])
+    products = data.get("products", []) or []
     deals, discounted_products, discounted_variants = collect_deals(products)
 
     sale_now = len(deals) > 0
     ranked = rank_deals(deals)
 
-    top5 = ranked[:TOP_N]
-    next5 = ranked[TOP_N:TOP_N * 2]
+    top = ranked[:TOP_N]
+    next_top = ranked[TOP_N:TOP_N * 2]
 
     signature = ""
-    if top5:
-        d0 = top5[0]
+    if top:
+        d0 = top[0]
         signature = f"{d0.get('variant_id',0)}|{d0['compare_at']:.2f}>{d0['price']:.2f}"
 
+    was_active = bool(state.get("sale_active", False))
+
     # Meldung nur beim Wechsel: False -> True
-    if (not state.get("sale_active", False)) and sale_now:
-        # Message 1: Summary + Top 5
+    if (not was_active) and sale_now:
+        # Message 1: Summary + Top N
         header_1 = (
             "🚨 MNSTRY Rabattaktion erkannt!\n\n"
             f"📦 Reduzierte Produkte: {discounted_products}\n"
             f"🏷️ Reduzierte Varianten: {discounted_variants}\n"
             f"🔗 {MNSTRY_HOME}\n\n"
-            "🔥 Top 5 Deals:\n"
+            f"🔥 Top {min(TOP_N, len(top)) if top else TOP_N} Deals:\n"
         )
-        body_1 = "\n\n".join(format_deal_line(d) for d in top5) if top5 else "• (keine Details verfügbar)"
+        body_1 = "\n\n".join(format_deal_line(d) for d in top) if top else "• (keine Details verfügbar)"
         telegram_send(header_1 + body_1)
 
-        # Message 2: Always send (per your request)
-        remaining_variants = max(0, discounted_variants - len(top5))
+        # Message 2: Always send (as requested)
+        remaining_variants = max(0, discounted_variants - len(top))
         header_2 = (
             "📩 Weitere Infos:\n"
-            f"• Weitere reduzierte Varianten (nach Top 5): {remaining_variants}\n"
+            f"• Weitere reduzierte Varianten (nach Top {len(top)}): {remaining_variants}\n"
         )
 
-        if next5:
-            header_2 += "\n➡️ Nächste Top 5:\n"
-            body_2 = "\n\n".join(format_deal_line(d) for d in next5)
+        if next_top:
+            header_2 += "\n➡️ Nächste Top Deals:\n"
+            body_2 = "\n\n".join(format_deal_line(d) for d in next_top)
             telegram_send(header_2 + body_2)
         else:
-            header_2 += "\n(Keine weiteren Deals in den nächsten 5.)"
+            header_2 += "\n(Keine weiteren Deals in den nächsten Slots.)"
             telegram_send(header_2)
 
-    # Reset, wenn kein Sale mehr aktiv ist (ohne Meldung)
+    # Optional: Notify if sale ends
+    if was_active and (not sale_now) and NOTIFY_SALE_END:
+        telegram_send("✅ MNSTRY: Rabattaktion scheint beendet (keine reduzierten Varianten mehr gefunden).")
+
+    # Update state
     state["sale_active"] = sale_now
     state["last_signature"] = signature
     save_state(state)
 
 
-if __name__ == "__main__":
-    # Retry bei kurzen Netzwerk-Hickups
-    for attempt in range(3):
+def main() -> None:
+    # Retry bei kurzen Netzwerk-Hickups (transient)
+    for attempt in range(MAX_ATTEMPTS):
         try:
-            main()
-            break
-        except Exception:
-            if attempt == 2:
+            run_once()
+            return
+        except requests.RequestException:
+            # transient network/http
+            if attempt == MAX_ATTEMPTS - 1:
                 raise
-            time.sleep(3)
+            time.sleep(RETRY_SLEEP_SECONDS * (attempt + 1))
+        except Exception:
+            # unknown exception: retry once or twice, then fail so we see it in Actions
+            if attempt == MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(RETRY_SLEEP_SECONDS)
 
 
+if __name__ == "__main__":
+    main()
