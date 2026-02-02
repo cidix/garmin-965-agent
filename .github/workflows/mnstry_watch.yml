@@ -2,35 +2,64 @@ name: MNSTRY Discount Watch
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "27 * * * *"
   workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 10
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - run: |
+      - name: Install deps
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - env:
+      - name: Run tracker
+        env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python mnstry_watch.py
+        run: python mnstry.py
+        # ^^^^^^^^^^^^^^
+        # Ändere das auf deinen tatsächlichen Dateinamen, falls nötig.
 
-      - name: Commit MNSTRY state back
+      - name: Commit state back
+        shell: bash
         run: |
-          if [[ -f mnstry_state.json ]]; then
+          set -euo pipefail
+
+          if [[ -f state.json ]]; then
             git config user.name "github-actions"
             git config user.email "github-actions@github.com"
-            git add mnstry_state.json
-            git diff --cached --quiet || git commit -m "Update MNSTRY state"
+
+            git add state.json
+
+            if git diff --cached --quiet; then
+              echo "No changes in state.json — nothing to commit."
+              exit 0
+            fi
+
+            git commit -m "Update state"
             git push
+          else
+            echo "state.json not found — nothing to commit."
           fi
