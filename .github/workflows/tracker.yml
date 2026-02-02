@@ -2,8 +2,9 @@ name: Garmin 965 Price Agent
 
 on:
   schedule:
-    - cron: "53 */2 * * *"
+    - cron: "7,37 * * * *"
   workflow_dispatch: {}
+
 
 concurrency:
   group: ${{ github.workflow }}
