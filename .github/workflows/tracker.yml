@@ -20,6 +20,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -38,11 +41,23 @@ jobs:
         run: python tracker.py
 
       - name: Commit state back
+        shell: bash
         run: |
+          set -euo pipefail
+
           if [[ -f state.json ]]; then
             git config user.name "github-actions"
             git config user.email "github-actions@github.com"
+
             git add state.json
-            git diff --cached --quiet || git commit -m "Update state"
+
+            if git diff --cached --quiet; then
+              echo "No changes in state.json — nothing to commit."
+              exit 0
+            fi
+
+            git commit -m "Update state"
             git push
+          else
+            echo "state.json not found — nothing to commit."
           fi
