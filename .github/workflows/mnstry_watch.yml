@@ -3,7 +3,6 @@ name: MNSTRY Discount Watch
 on:
   schedule:
     - cron: "53 * * * *"
-
   workflow_dispatch: {}
 
 concurrency:
@@ -35,32 +34,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 👇 Jitter (0–24s)
+      - name: Small jitter
+        run: sleep $((RANDOM % 25))
+
       - name: Run tracker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python mnstry.py
-        # ^^^^^^^^^^^^^^
-        # Ändere das auf deinen tatsächlichen Dateinamen, falls nötig.
+        run: python mnstry_watch.py
 
       - name: Commit state back
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ -f state.json ]]; then
+          if [[ -f mnstry_state.json ]]; then
             git config user.name "github-actions"
             git config user.email "github-actions@github.com"
-
-            git add state.json
-
-            if git diff --cached --quiet; then
-              echo "No changes in state.json — nothing to commit."
-              exit 0
-            fi
-
-            git commit -m "Update state"
+            git add mnstry_state.json
+            git diff --cached --quiet || git commit -m "Update MNSTRY state"
             git push
-          else
-            echo "state.json not found — nothing to commit."
           fi
