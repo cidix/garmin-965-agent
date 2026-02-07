@@ -27,11 +27,7 @@ jobs:
           set -euo pipefail
           for i in 1 2 3; do
             echo "Attempt $i: connect to api.telegram.org:443"
-            python - <<'PY' && exit 0
-            import socket
-            socket.create_connection(("api.telegram.org", 443), timeout=10).close()
-            print("OK")
-            PY
+            python -c "import socket; socket.create_connection(('api.telegram.org', 443), timeout=10).close(); print('OK')" && exit 0
             echo "Failed attempt $i, sleeping..."
             sleep $((i*5))
           done
