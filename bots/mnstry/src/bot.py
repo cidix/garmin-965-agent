@@ -121,15 +121,15 @@ def http_get_json(url: str) -> Optional[Dict[str, Any]]:
     headers = {"User-Agent": USER_AGENT}
 
     try:
-        r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        r = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True)
     except requests.RequestException:
         return None
 
-    # Wenn blockiert / temporär down: still skippen (keine Fehlalarme)
+    # If blocked / temporary issue: skip (avoid false alerts)
     if r.status_code != 200:
         return None
 
-    # Shopify JSON sollte JSON sein; falls HTML kommt (WAF/Block), skip
+    # Shopify JSON should be JSON; if HTML arrives (WAF/Block), skip
     ct = (r.headers.get("content-type") or "").lower()
     if "application/json" not in ct and "json" not in ct:
         return None
@@ -163,7 +163,11 @@ def calc_discount(compare_at: float, price: float) -> Tuple[float, float]:
     return discount_abs, discount_pct
 
 
-def collect_deals(products: List[Dict[str, Any]], base_url: str, home_url: str) -> Tuple[List[Dict[str, Any]], int, int]:
+def collect_deals(
+    products: List[Dict[str, Any]],
+    base_url: str,
+    home_url: str
+) -> Tuple[List[Dict[str, Any]], int, int]:
     """
     Returns:
       deals: list of discounted variants with computed discount
@@ -243,7 +247,7 @@ def format_deal_line(d: Dict[str, Any]) -> str:
 
 
 # ----------------------------
-# Main
+# Target runner
 # ----------------------------
 def run_once_for_target(target: Dict[str, Any], state_file: str) -> Tuple[Dict[str, Any], List[str], str]:
     target_id = str(target.get("id") or "").strip()
@@ -259,7 +263,7 @@ def run_once_for_target(target: Dict[str, Any], state_file: str) -> Tuple[Dict[s
 
     data = http_get_json(products_json)
     if not data:
-        # keine Meldung, Status nicht kaputt machen
+        # Keep state unchanged and still return a summary so we always log one line per target
         return state, [], f"{target_id}: NO_CHANGE"
 
     products = data.get("products", []) or []
@@ -274,15 +278,14 @@ def run_once_for_target(target: Dict[str, Any], state_file: str) -> Tuple[Dict[s
     signature = ""
     if top:
         d0 = top[0]
-        signature = f"{d0.get('variant_id',0)}|{d0['compare_at']:.2f}>{d0['price']:.2f}"
+        signature = f"{d0.get('variant_id', 0)}|{d0['compare_at']:.2f}>{d0['price']:.2f}"
 
     was_active = bool(state.get("sale_active", False))
 
     notifications: List[str] = []
 
-    # Meldung nur beim Wechsel: False -> True
+    # Notify only on transition: False -> True
     if (not was_active) and sale_now:
-        # Message 1: Summary + Top N
         header_1 = (
             f"🚨 {label}: Rabattaktion erkannt!\n\n"
             f"📦 Reduzierte Produkte: {discounted_products}\n"
@@ -293,7 +296,6 @@ def run_once_for_target(target: Dict[str, Any], state_file: str) -> Tuple[Dict[s
         body_1 = "\n\n".join(format_deal_line(d) for d in top) if top else "• (keine Details verfügbar)"
         notifications.append(header_1 + body_1)
 
-        # Message 2: Always send (as requested)
         remaining_variants = max(0, discounted_variants - len(top))
         header_2 = (
             "📩 Weitere Infos:\n"
@@ -308,11 +310,10 @@ def run_once_for_target(target: Dict[str, Any], state_file: str) -> Tuple[Dict[s
             header_2 += "\n(Keine weiteren Deals in den nächsten Slots.)"
             notifications.append(header_2)
 
-    # Optional: Notify if sale ends
     if was_active and (not sale_now) and NOTIFY_SALE_END:
         notifications.append(f"✅ {label}: Rabattaktion scheint beendet (keine reduzierten Varianten mehr gefunden).")
 
-    # Update state (in DRY_RUN we will not persist it)
+    # Update state (DRY_RUN will not persist it)
     state["sale_active"] = sale_now
     state["last_signature"] = signature
 
@@ -323,6 +324,9 @@ def run_once_for_target(target: Dict[str, Any], state_file: str) -> Tuple[Dict[s
     return state, notifications, summary
 
 
+# ----------------------------
+# Main
+# ----------------------------
 def main() -> None:
     targets = load_targets()
 
@@ -331,10 +335,11 @@ def main() -> None:
         state_file = state_file_for_target(target_id)
 
         try:
-            # Retry bei kurzen Netzwerk-Hickups (transient) pro Target
             for attempt in range(MAX_ATTEMPTS):
                 try:
                     new_state, notifications, summary = run_once_for_target(target, state_file)
+
+                    # Always print one result line per target
                     print(summary)
 
                     if DRY_RUN:
@@ -344,7 +349,7 @@ def main() -> None:
                             print(msg)
                         break
 
-                    # Normal mode: send messages only if we have notifications
+                    # Normal mode: send only if there is something to notify
                     for msg in notifications:
                         telegram_send(msg)
 
@@ -364,7 +369,7 @@ def main() -> None:
         except Exception as e:
             print(f"{target_id}: ERROR {e}")
             if not DRY_RUN:
-                # Minimal warning, do not abort whole run
+                # Minimal warning; do not abort whole run
                 try:
                     telegram_send(f"MNSTRY bot error on {target_id}: {e}")
                 except Exception:
