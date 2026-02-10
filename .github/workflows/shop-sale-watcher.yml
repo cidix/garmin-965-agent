@@ -42,70 +42,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Small jitter
-        shell: bash
-        run: sleep $((RANDOM % 25))
-
-      - name: Run bot
-        shell: bash
+      # Shared watcher pipeline (run + state persist)
+      - name: Run watcher pipeline
+        uses: ./.github/actions/run-watcher
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          set -euo pipefail
-          python bots/shop-sale-watcher/src/bot.py
-
-      - name: Commit & push state (retry)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # New canonical state location (cosmetic + consistent with bot folder)
-          BOT_ID="shop-sale-watcher"
-          DATA_DIR="bots/${BOT_ID}/data"
-
-          # Legacy state location (previous setup)
-          LEGACY_DIR="bots/mnstry/data"
-
-          # Ensure canonical state dir exists (Git doesn't track empty dirs)
-          mkdir -p "${DATA_DIR}"
-          touch "${DATA_DIR}/.gitkeep"
-
-          # If legacy state exists, copy it into canonical dir
-          if [ -d "${LEGACY_DIR}" ]; then
-            echo "Legacy state dir found (${LEGACY_DIR}). Syncing into ${DATA_DIR}..."
-            rsync -a "${LEGACY_DIR}/" "${DATA_DIR}/"
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add "${DATA_DIR}/"
-
-          if git diff --cached --quiet; then
-            echo "No state changes to commit."
-            echo "No actionable change. State unchanged."
-            exit 0
-          fi
-
-          git commit -m "chore(state): update ${BOT_ID} state" || true
-
-          for i in 1 2 3; do
-            echo "Push attempt ${i}..."
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              echo "Push succeeded."
-              echo "State updated and persisted."
-              exit 0
-            fi
-
-            echo "Push failed. Retrying..."
-            sleep $((i*2))
-          done
-
-          echo "Push failed after retries."
-          exit 1
+        with:
+          bot_id: shop-sale-watcher
+          run_cmd: python bots/shop-sale-watcher/src/bot.py
 
       # Status message on manual run (and only if user wants it)
       - name: Telegram status (manual run)
