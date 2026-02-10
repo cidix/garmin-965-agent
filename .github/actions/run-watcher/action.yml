@@ -1,0 +1,83 @@
+name: Run Watcher Bot
+description: Standard pipeline for watcher bots (run + persist state).
+
+inputs:
+  bot_id:
+    description: Bot ID (must match bots/<bot_id>/).
+    required: true
+  run_cmd:
+    description: Command to run the bot (e.g. python bots/<id>/src/bot.py).
+    required: true
+  data_dir:
+    description: State directory to persist. Defaults to bots/<bot_id>/data.
+    required: false
+    default: ""
+  jitter_max_seconds:
+    description: Random sleep jitter max seconds.
+    required: false
+    default: "25"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup git identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+    - name: Small jitter
+      shell: bash
+      run: |
+        set -euo pipefail
+        MAX="${{ inputs.jitter_max_seconds }}"
+        sleep $((RANDOM % MAX))
+
+    - name: Run bot
+      shell: bash
+      run: |
+        set -euo pipefail
+        ${{ inputs.run_cmd }}
+
+    - name: Commit & push state (retry)
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BOT_ID="${{ inputs.bot_id }}"
+        DATA_DIR_INPUT="${{ inputs.data_dir }}"
+
+        if [ -n "${DATA_DIR_INPUT}" ]; then
+          DATA_DIR="${DATA_DIR_INPUT}"
+        else
+          DATA_DIR="bots/${BOT_ID}/data"
+        fi
+
+        mkdir -p "${DATA_DIR}"
+        touch "${DATA_DIR}/.gitkeep"
+
+        git add "${DATA_DIR}/"
+
+        if git diff --cached --quiet; then
+          echo "No state changes to commit."
+          exit 0
+        fi
+
+        git commit -m "chore(state): update ${BOT_ID} state" || true
+
+        for i in 1 2 3; do
+          echo "Push attempt ${i}..."
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+
+          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "Push succeeded."
+            exit 0
+          fi
+
+          echo "Push failed. Retrying..."
+          sleep $((i*2))
+        done
+
+        echo "Push failed after retries."
+        exit 1
