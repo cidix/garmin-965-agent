@@ -28,6 +28,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install deps
         shell: bash
@@ -51,14 +52,19 @@ jobs:
 
       - name: Run bot
         shell: bash
+        working-directory: bots/budget
         env:
-          BUDGET_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          BUDGET_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Prefer consistent secret names matching the env vars the script reads:
+          BUDGET_TELEGRAM_BOT_TOKEN: ${{ secrets.BUDGET_TELEGRAM_BOT_TOKEN }}
+          BUDGET_TELEGRAM_CHAT_ID: ${{ secrets.BUDGET_TELEGRAM_CHAT_ID }}
+          # Optional: only if you actually store this as a secret; otherwise remove.
           BUDGET_THB_TO_CHF: ${{ secrets.BUDGET_THB_TO_CHF }}
-          BUDGET_DATA_DIR: bots/budget/data
+          # Critical: because we run inside bots/budget
+          BUDGET_DATA_DIR: "data"
+          PYTHONUNBUFFERED: "1"
         run: |
           set -euo pipefail
-          python bots/budget/src/bot.py
+          python budget_bot.py
 
       - name: Commit & push state (retry)
         shell: bash
