@@ -60,12 +60,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          BOT_ID="mnstry"
+          # New canonical state location (cosmetic + consistent with bot folder)
+          BOT_ID="shop-sale-watcher"
           DATA_DIR="bots/${BOT_ID}/data"
 
-          # Ensure state directory exists (Git doesn't track empty dirs)
+          # Legacy state location (previous setup)
+          LEGACY_DIR="bots/mnstry/data"
+
+          # Ensure canonical state dir exists (Git doesn't track empty dirs)
           mkdir -p "${DATA_DIR}"
           touch "${DATA_DIR}/.gitkeep"
+
+          # If legacy state exists, copy it into canonical dir
+          if [ -d "${LEGACY_DIR}" ]; then
+            echo "Legacy state dir found (${LEGACY_DIR}). Syncing into ${DATA_DIR}..."
+            rsync -a "${LEGACY_DIR}/" "${DATA_DIR}/"
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
