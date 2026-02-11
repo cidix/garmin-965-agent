@@ -27,6 +27,16 @@ runs:
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+    - name: Preflight: assert clean working tree
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+          echo "Working tree is not clean before running bot. Aborting." >&2
+          git status --porcelain >&2 || true
+          exit 1
+        fi
+
     - name: Small jitter
       shell: bash
       run: |
@@ -71,19 +81,12 @@ runs:
 
         mkdir -p "${DATA_DIR}"
 
-        # Create .gitkeep only if missing (avoid pointless timestamp/changes).
+        # Create .gitkeep only if missing.
         if [ ! -f "${DATA_DIR}/.gitkeep" ]; then
           : > "${DATA_DIR}/.gitkeep"
         fi
 
         git add "${DATA_DIR}/"
-
-        # Ensure we start from a clean working tree before any rebase/push logic.
-        if ! git diff --quiet || ! git diff --cached --quiet; then
-          echo "Working tree is not clean before rebase/push. Aborting to avoid rebase conflicts." >&2
-          git status --porcelain >&2 || true
-          exit 1
-        fi
 
         if git diff --cached --quiet; then
           echo "No state changes to commit."
