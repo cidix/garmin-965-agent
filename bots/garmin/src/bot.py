@@ -31,11 +31,32 @@ BLOCK_PATTERNS = [
 
 def telegram(msg):
     url = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage"
-    requests.post(url, json={
-        "chat_id": os.environ["TELEGRAM_CHAT_ID"],
-        "text": msg,
-        "disable_web_page_preview": False
-    }, timeout=20)
+    try:
+        r = requests.post(
+            url,
+            json={
+                "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                "text": msg,
+                "disable_web_page_preview": False,
+            },
+            timeout=20,
+        )
+        r.raise_for_status()
+
+        # Telegram can return 200 with ok=false; surface that too.
+        try:
+            payload = r.json()
+            if payload.get("ok") is False:
+                print(f"[telegram] API returned ok=false: {payload}", flush=True)
+        except Exception:
+            print(f"[telegram] Non-JSON response: {r.text[:300]}", flush=True)
+
+        return True
+    except Exception as e:
+        # Visible in Actions logs, but non-fatal (watcher continues).
+        print(f"[telegram] send failed: {type(e).__name__}: {e}", flush=True)
+        return False
+
 
 def load_state():
     if not os.path.exists(STATE_FILE):

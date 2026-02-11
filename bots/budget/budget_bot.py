@@ -11,9 +11,22 @@ from typing import Optional, List, Dict, Tuple
 # =========================
 # Config
 # =========================
-TELEGRAM_BOT_TOKEN = os.environ["BUDGET_TELEGRAM_BOT_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["BUDGET_TELEGRAM_CHAT_ID"]  # numeric string
-DATA_DIR = os.environ.get("BUDGET_DATA_DIR", "bots/budget/data")
+def _env_first(*keys, default=None) -> str:
+    """Return first present env var in keys, else default, else raise KeyError."""
+    for k in keys:
+        v = os.environ.get(k)
+        if v:
+            return v
+    if default is not None:
+        return default
+    raise KeyError(f"Missing required env var. Tried: {', '.join(keys)}")
+
+# Prefer workflow-standard env vars; fallback to BUDGET_* for backwards compatibility.
+TELEGRAM_BOT_TOKEN = _env_first("TELEGRAM_BOT_TOKEN", "BUDGET_TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = _env_first("TELEGRAM_CHAT_ID", "BUDGET_TELEGRAM_CHAT_ID")  # numeric string
+
+# DATA_DIR standardization: prefer DATA_DIR, fallback to BUDGET_DATA_DIR, fallback default.
+DATA_DIR = _env_first("DATA_DIR", "BUDGET_DATA_DIR", default="bots/budget/data")
 
 # Main currency CHF. THB secondary.
 THB_TO_CHF = float(os.environ.get("BUDGET_THB_TO_CHF", "0.026"))  # fixed rate
