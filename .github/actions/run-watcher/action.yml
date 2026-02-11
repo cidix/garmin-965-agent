@@ -27,7 +27,7 @@ runs:
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-    - name: "Preflight: assert clean working tree"
+    - name: Preflight: assert clean working tree
       shell: bash
       run: |
         set -euo pipefail
@@ -70,7 +70,7 @@ runs:
           DATA_DIR="bots/${BOT_ID}/data"
         fi
 
-        # Safety: only allow persisting under bots/<id>/data to prevent accidental repo-wide commits.
+        # Safety: only allow persisting under bots/<id>/data.
         case "${DATA_DIR}" in
           "bots/${BOT_ID}/data"|"bots/${BOT_ID}/data/"* ) ;;
           * )
@@ -87,6 +87,13 @@ runs:
         fi
 
         git add "${DATA_DIR}/"
+
+        # Assert that ONLY DATA_DIR has changes (fail-fast).
+        if git status --porcelain | cut -c4- | grep -qv -E "^${DATA_DIR}(/|$)"; then
+          echo "Refusing to commit: changes detected outside ${DATA_DIR}." >&2
+          git status --porcelain >&2 || true
+          exit 1
+        fi
 
         if git diff --cached --quiet; then
           echo "No state changes to commit."
