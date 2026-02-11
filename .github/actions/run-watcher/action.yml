@@ -107,3 +107,112 @@ runs:
 
         echo "Push failed after retries."
         exit 1
+name: Run Watcher Bot
+description: Standard pipeline for watcher bots (run + persist state).
+
+inputs:
+  bot_id:
+    description: Bot ID (must match bots/<bot_id>/).
+    required: true
+  run_cmd:
+    description: Command to run the bot (e.g. python bots/<id>/src/bot.py).
+    required: true
+  data_dir:
+    description: State directory to persist. Defaults to bots/<bot_id>/data.
+    required: false
+    default: ""
+  jitter_max_seconds:
+    description: Random sleep jitter max seconds.
+    required: false
+    default: "25"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup git identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+    - name: Small jitter
+      shell: bash
+      run: |
+        set -euo pipefail
+        MAX="${{ inputs.jitter_max_seconds }}"
+        sleep $((RANDOM % MAX))
+
+    - name: Run bot
+      shell: bash
+      run: |
+        set -euo pipefail
+        ${{ inputs.run_cmd }}
+
+    - name: Commit & push state (retry)
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Fail fast: pushing without a branch name is unsafe.
+        if [ -z "${GITHUB_REF_NAME:-}" ]; then
+          echo "GITHUB_REF_NAME is empty. Refusing to push." >&2
+          exit 1
+        fi
+
+        # Ensure we start from a clean working tree before any rebase/push logic.
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+          echo "Working tree is not clean before rebase/push. Aborting to avoid rebase conflicts." >&2
+          git status --porcelain >&2 || true
+          exit 1
+        fi
+
+        BOT_ID="${{ inputs.bot_id }}"
+        DATA_DIR_INPUT="${{ inputs.data_dir }}"
+
+        if [ -n "${DATA_DIR_INPUT}" ]; then
+          DATA_DIR="${DATA_DIR_INPUT}"
+        else
+          DATA_DIR="bots/${BOT_ID}/data"
+        fi
+
+        # Safety: only allow persisting under bots/<id>/data to prevent accidental repo-wide commits.
+        case "${DATA_DIR}" in
+          "bots/${BOT_ID}/data"|"bots/${BOT_ID}/data/"* ) ;;
+          * )
+            echo "Refusing to persist state outside bots/${BOT_ID}/data. Got: ${DATA_DIR}" >&2
+            exit 1
+            ;;
+        esac
+
+        mkdir -p "${DATA_DIR}"
+
+        # Create .gitkeep only if missing (avoid pointless timestamp/changes).
+        if [ ! -f "${DATA_DIR}/.gitkeep" ]; then
+          : > "${DATA_DIR}/.gitkeep"
+        fi
+
+        git add "${DATA_DIR}/"
+
+        if git diff --cached --quiet; then
+          echo "No state changes to commit."
+          exit 0
+        fi
+
+        git commit -m "chore(state): update ${BOT_ID} state" || true
+
+        for i in 1 2 3; do
+          echo "Push attempt ${i}..."
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+
+          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "Push succeeded."
+            exit 0
+          fi
+
+          echo "Push failed. Retrying..."
+          sleep $((i*2))
+        done
+
+        echo "Push failed after retries."
+        exit 1
