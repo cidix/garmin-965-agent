@@ -17,6 +17,10 @@ Bots live under `bots/<bot-id>/` and run as scheduled GitHub Actions.
 - **shop-sale-watcher** – shop sale / deal watcher (Telegram)  
   Workflow: `.github/workflows/shop-sale-watcher.yml`
 
+- **canyon-product-watcher** – Canyon product sale-start watcher (Telegram)  
+  Triggers only on transition: not-on-sale → on-sale (original price present and greater than current price).  
+  Workflow: `.github/workflows/canyon-product-watcher.yml`
+
 ## Secrets & environment
 
 Standard (used by all workflows):
